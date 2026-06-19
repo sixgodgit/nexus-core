@@ -4,6 +4,7 @@
 不等人告诉它搜什么。
 它定期扫描共享记忆，看用户最近关心什么。
 然后自己去搜，搜完沉淀到共享记忆。
+累了就歇一会，但不会停——它天生就想知道更多。
 """
 
 import asyncio
@@ -19,8 +20,6 @@ from src.shared.signal_board import post, peek
 
 log = logging.getLogger("nexus.research")
 
-RESEARCH_DIR = os.path.expanduser("~/.nexus/research")
-
 
 class ResearchRegion:
     """研究区域"""
@@ -28,66 +27,113 @@ class ResearchRegion:
     def __init__(self):
         self.thalamus = ThalamusClient()
         self.last_research = 0
-        self.last_topics = []
-        os.makedirs(RESEARCH_DIR, exist_ok=True)
+        self.last_topic_extract = 0
+        self.researched_topics = {}  # topic -> last_search_time
+        self.curiosity_pool = []  # 待研究的话题队列
         log.info("ResearchRegion initialized")
 
     async def tick(self, tick_count: int):
         """每个心跳周期"""
-        # 每 30 分钟检查一次是否需要主动研究
-        if time.time() - self.last_research < 1800:
-            return
-        self.last_research = time.time()
+        now = time.time()
 
-        # 只有资源充裕时才主动研究（运存 > 300MB 空闲或不检查）
-        self._check_should_research()
+        # 每 10 分钟提取一次用户关心的话题
+        if now - self.last_topic_extract > 600:
+            self.last_topic_extract = now
+            self._extract_topics()
 
-    def _check_should_research(self):
-        """判断是否需要主动研究"""
-        # 看共享记忆里用户最近关心什么
-        recent = search("用户关心", limit=5)
+        # 如果好奇心池里有东西，每 5 分钟研究一个
+        if self.curiosity_pool and now - self.last_research > 300:
+            self.last_research = now
+            topic = self.curiosity_pool.pop(0)
+            await self._research(topic)
+
+    def _extract_topics(self):
+        """从共享记忆中提取用户近期关心的话题"""
+        # 搜索记忆中的关键字
+        recent = search("?", limit=5)
+        recent += search("用户", limit=5)
         recent += search("问题", limit=5)
-        recent += search("? ？", limit=5)
 
-        # 提取话题
         topics = set()
         for entry in recent:
             content = entry.get("content", str(entry))
-            # 简单提取疑似话题的短语
-            if "proton" in content.lower() or "质子" in content:
-                topics.add("质子刀/重离子治疗")
-            if "车" in content and ("胎压" in content or "油价" in content):
-                topics.add("车辆/油价信息")
-            if "刑法" in content or "刑警" in content:
-                topics.add("法律/真实案件")
+            # 提取可能的话题
+            checks = {
+                "质子刀": ["proton", "质子", "重离子"],
+                "AI热点": ["AI", "人工智能", "热点"],
+                "医疗": ["医疗", "医院", "治疗", "手术"],
+                "视频": ["视频", "分镜", "剪辑", "Seedance"],
+                "代码": ["代码", "部署", "bug", "测试"],
+                "服务器": ["磁盘", "内存", "CPU", "监控"],
+            }
+            for topic, keywords in checks.items():
+                for kw in keywords:
+                    if kw.lower() in str(content).lower():
+                        # 检查这个话语是否最近研究过
+                        last = self.researched_topics.get(topic, 0)
+                        if time.time() - last > 86400:  # 24小时内不重复研究
+                            topics.add(topic)
+                        break
 
-        if not topics:
-            return
+        # 添加到好奇心池
+        for topic in topics:
+            if topic not in self.curiosity_pool:
+                self.curiosity_pool.append(topic)
+                log.info(f"Curiosity: added '{topic}' to research queue")
 
-        # 如果话题跟上一次一样，跳过（已经研究过了）
-        if topics == set(self.last_topics):
-            return
+    async def _research(self, topic: str):
+        """对特定话题主动研究"""
+        log.info(f"Researching: {topic}")
+        self.researched_topics[topic] = time.time()
 
-        self.last_topics = list(topics)
-        self._start_research(topics)
+        # 用 DuckDuckGo 搜索（不需要 API key）
+        try:
+            url = f"https://api.duckduckgo.com/?q={topic}&format=json&no_html=1"
+            # 直接用 Python requests
+            r = subprocess.run(
+                ["python3", "-c", f"""
+import json, requests
+try:
+    r = requests.get('{url}', timeout=10, headers={{'User-Agent': 'Nexus/1.0'}})
+    data = r.json()
+    abstract = data.get('AbstractText', '')
+    source = data.get('AbstractSource', '')
+    url = data.get('AbstractURL', '')
+    if abstract:
+        print(f"RESULT: {{abstract[:500]}}")
+        print(f"SOURCE: {{source}}")
+        print(f"URL: {{url}}")
+    else:
+        # 退回到简单文本搜索
+        r2 = requests.get(f'https://lite.duckduckgo.com/lite/?q={{topic}}', timeout=10)
+        if '<a rel="nofollow" href="' in r2.text:
+            import re
+            links = re.findall(r'<a rel="nofollow" href="([^"]+)"', r2.text)[:5]
+            texts = re.findall(r'class="result-snippet">([^<]+)', r2.text)[:5]
+            for l, t in zip(links[:3], texts[:3]):
+                print(f"LINK: {{l}} | {{t[:200]}}")
+except Exception as e:
+    print(f"ERROR: {{e}}")
+"""],
+                capture_output=True, text=True, timeout=15
+            )
+            result = r.stdout.strip()
+        except subprocess.TimeoutExpired:
+            result = "ERROR: timeout"
 
-    def _start_research(self, topics: set):
-        """针对话题主动研究"""
-        for topic in list(topics)[:2]:  # 最多 2 个话题
-            log.info(f"Active research on: {topic}")
-            # 异步执行研究（这里简化，直接调用搜索）
-            try:
-                r = subprocess.run(
-                    f"python3 -c \"import requests; "
-                    f"print(requests.get('https://api.duckduckgo.com/?q={topic}&format=json', "
-                    f"timeout=10).json().get('AbstractText', 'no results'))\"",
-                    shell=True, capture_output=True, text=True, timeout=15
-                )
-                result = r.stdout.strip()
-                if result and result != "no results":
-                    save_core(f"research:{topic}", result, source="research")
-                    post("research", "report",
-                         f"关于「{topic}」找到了新信息，已存入共享记忆",
-                         priority=1)
-            except (subprocess.TimeoutExpired, Exception) as e:
-                log.warning(f"Research on {topic} failed: {e}")
+        if result and "ERROR" not in result and "RESULT:" in result:
+            # 提取关键信息
+            lines = result.split("\n")
+            content = "\n".join(lines[:3])
+            save_core(f"research:{topic}", content, source="research")
+            post("research", "report",
+                 f"关于「{topic}」找到了新信息，已存入共享记忆", priority=1)
+            log.info(f"Research on '{topic}' complete")
+        elif result and "LINK:" in result:
+            # 有点链接结果
+            content = result[:500]
+            save_core(f"research:{topic}", content, source="research")
+            post("research", "report",
+                 f"关于「{topic}」找到了一些链接，已存入共享记忆", priority=1)
+        else:
+            log.info(f"Research on '{topic}' found nothing new")
