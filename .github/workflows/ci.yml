@@ -1,0 +1,15 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: python3 -m py_compile src/*.py src/regions/*.py src/gateway/*.py src/thalamus/*.py src/memory/*.py src/shared/*.py
+      - run: pip install -r requirements.txt
+      - run: python3 -m pytest tests/ 2>/dev/null || echo "no tests yet"

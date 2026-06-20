@@ -1,0 +1,17 @@
+[Unit]
+Description=Nexus Core — 分布式意识系统
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/nexus
+ExecStart=/usr/bin/python3 /root/nexus/src/nexus.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/.nexus/logs/nexus.log
+StandardError=append:/root/.nexus/logs/nexus.log
+Environment=HOME=/root
+
+[Install]
+WantedBy=multi-user.target
