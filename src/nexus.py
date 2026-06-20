@@ -572,6 +572,24 @@ class Nexus:
         log.info(f"{len(self.regions)} regions loaded: "
                  f"{', '.join(self.regions.keys())}")
 
+        # 启动感官
+        try:
+            from gateway.api import APISensor
+            api = APISensor(self)
+            api.start(host="127.0.0.1", port=8560)
+            log.info("API 感官就绪: http://127.0.0.1:8560")
+        except Exception as e:
+            log.warning(f"API sensor failed: {e}")
+
+        # 启动飞书感官
+        try:
+            from gateway.feishu import FeishuSensor
+            feishu = FeishuSensor(self.handle_message)
+            feishu.start()
+            log.info("飞书感官就绪")
+        except Exception as e:
+            log.warning(f"Feishu sensor failed: {e}")
+
         # 主循环
         asyncio.run(self._loop())
 
